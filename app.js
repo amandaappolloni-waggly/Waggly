@@ -335,30 +335,51 @@ async function homeScreen(_arg, stale) {
   const walkedDays = new Set(monthMine.map((w) => dayKey(w.started_at))).size;
   const myMiles = monthMine.reduce((s, w) => s + w.distance_m, 0);
 
+  // Monthly challenges: most days walked, most steps, longest single walk.
+  const tally = (list) => ({
+    days: new Set(list.map((w) => dayKey(w.started_at))).size,
+    dist: list.reduce((s, w) => s + w.distance_m, 0),
+    longest: list.reduce((m, w) => Math.max(m, w.distance_m), 0),
+  });
+  const meT = tally(monthMine);
   const races = S.friends.map((f) => {
-    const theirs = walks.filter((w) => w.user_id === f.id && Date.parse(w.started_at) >= monthStart).reduce((s, w) => s + w.distance_m, 0);
-    const total = myMiles + theirs;
-    const pct = total ? Math.round((myMiles / total) * 100) : 50;
-    const diff = miles(Math.abs(myMiles - theirs));
+    const them = tally(walks.filter((w) => w.user_id === f.id && Date.parse(w.started_at) >= monthStart));
+    const cats = [
+      { name: 'Most days walked', you: meT.days, them: them.days, show: (v) => `${v} ${v === 1 ? 'day' : 'days'}`, tie: 0 },
+      { name: 'Most steps', you: meT.dist, them: them.dist, show: (v) => `≈ ${estSteps(v)}`, tie: 40 },
+      { name: 'Longest single walk', you: meT.longest, them: them.longest, show: (v) => `${fmtMi(v)} mi`, tie: 40 },
+    ].map((c) => {
+      const lead = Math.abs(c.you - c.them) <= c.tie ? 0 : c.you > c.them ? 1 : -1;
+      const total = c.you + c.them;
+      return { ...c, lead, pct: total ? Math.round((c.you / total) * 100) : 50 };
+    });
+    const mineWon = cats.filter((c) => c.lead === 1).length, theirsWon = cats.filter((c) => c.lead === -1).length;
     let line;
-    if (!total) line = 'Fresh month! The first walk takes the lead.';
-    else if (diff < 0.05) line = 'Dead even! One walk could settle it.';
-    else if (myMiles > theirs) line = `You're ahead by ${diff.toFixed(1)} mi. Keep it up!`;
-    else line = `${diff.toFixed(1)} mi behind. Time for a long walk?`;
-    return { f, theirs, pct, line, gap: Math.abs(myMiles - theirs) };
+    if (!meT.days && !them.days) line = 'Fresh month! The first walk takes the lead.';
+    else if (mineWon > theirsWon) line = `You're leading ${mineWon} of 3 challenges. Keep it up!`;
+    else if (theirsWon > mineWon) line = `${f.display_name} leads ${theirsWon} of 3. Time to catch up?`;
+    else line = 'Neck and neck! Every walk counts.';
+    return { f, cats, line, gap: Math.abs(mineWon - theirsWon) * 1e6 + Math.abs(meT.dist - them.dist) };
   }).sort((a, b) => a.gap - b.gap);
   if (S.raceIdx >= races.length) S.raceIdx = 0;
   const bg = [C.peach, C.sky, C.butter, C.lavender, C.pistachio];
 
   const raceHtml = races.length ? (() => {
     const r = races[S.raceIdx];
+    const nm = esc(r.f.display_name);
+    const badge = (lead) => lead === 1 ? `<span class="chip" style="background:${C.ink};color:#fff;font-size:11px;padding:4px 9px">You lead</span>`
+      : lead === -1 ? `<span class="chip" style="background:#fff;font-size:11px;padding:4px 9px">${nm} leads</span>`
+      : `<span class="chip" style="background:rgba(255,255,255,0.6);font-size:11px;padding:4px 9px">Tied</span>`;
     return `<div class="card color stack" style="background:${bg[S.raceIdx % bg.length]}">
-      <div class="row between"><span class="chip" style="background:${C.ink};color:#fff;font-size:12px">You vs. ${esc(r.f.display_name)}</span><span style="font-size:13px;font-weight:800">${daysLeft()} days left</span></div>
+      <div class="row between"><span class="chip" style="background:${C.ink};color:#fff;font-size:12px">You vs. ${nm}</span><span style="font-size:13px;font-weight:800">${daysLeft()} days left</span></div>
       <div class="big" style="font-size:26px;line-height:1.05">${esc(monthName())} Showdown</div>
-      <div class="stack" style="gap:6px"><div class="row between" style="font-size:14px;font-weight:900"><span>You: ${fmtMi(myMiles)} mi</span><span>${esc(r.f.display_name)}: ${fmtMi(r.theirs)} mi</span></div>
-      <div class="bar-track"><div class="bar-fill" style="width:${r.pct}%"></div></div></div>
-      <div style="font-size:14px;font-weight:800">${esc(r.line)}</div></div>
-      ${races.length > 1 ? `<div class="pager">${races.map((x, i) => `<button class="${i === S.raceIdx ? 'on' : ''}" data-act="race" data-i="${i}" aria-label="Show race with ${esc(x.f.display_name)}"><span></span></button>`).join('')}</div>` : ''}`;
+      ${r.cats.map((c) => `<div class="stack" style="gap:5px">
+        <div class="row between"><span style="font-size:14px;font-weight:900">${c.name}</span>${badge(c.lead)}</div>
+        <div class="bar-track" style="height:10px"><div class="bar-fill" style="height:10px;width:${c.pct}%"></div></div>
+        <div class="row between" style="font-size:13px;font-weight:800"><span>You: ${c.show(c.you)}</span><span>${nm}: ${c.show(c.them)}</span></div></div>`).join('')}
+      <div style="font-size:14px;font-weight:900">${esc(r.line)}</div>
+      <div style="font-size:12px;font-weight:700;line-height:1.35">Safety first: only walk as far as your vet recommends for your dog. Watch for heat, hot pavement and tired paws, and take breaks.</div></div>
+      ${races.length > 1 ? `<div class="pager">${races.map((x, i) => `<button class="${i === S.raceIdx ? 'on' : ''}" data-act="race" data-i="${i}" aria-label="Show showdown with ${esc(x.f.display_name)}"><span></span></button>`).join('')}</div>` : ''}`;
   })() : `<a class="empty" href="#/friends" style="text-decoration:none">Add a friend to start a monthly showdown →</a>`;
 
   const liveHtml = live.map((w) => {
@@ -379,7 +400,7 @@ async function homeScreen(_arg, stale) {
       <div class="dots" aria-hidden="true">${dots}</div>
       <div class="row" style="gap:8px"><span class="chip">${monthMine.length} walks</span><span class="chip">${fmtMi(myMiles)} mi</span><span class="chip">≈ ${estSteps(myMiles)} steps</span></div>
     </section>
-    <section class="stack" aria-label="Your races"><div class="row between" style="padding:0 4px"><h2 class="title-sm">Your races</h2>${races.length > 1 ? '<span class="sub" style="font-size:13px">Closest race first</span>' : ''}</div>${raceHtml}</section>
+    <section class="stack" aria-label="Monthly challenges"><div class="row between" style="padding:0 4px"><h2 class="title-sm">Monthly challenges</h2>${races.length > 1 ? '<span class="sub" style="font-size:13px">Closest showdown first</span>' : ''}</div>${raceHtml}</section>
     <a class="banner" href="#/walks" style="background:${C.lavender}"><div class="grow"><div style="font-weight:900;font-size:16px">See everyone's walks</div><div class="sub" style="color:${C.ink}">Recent walks and paws from your friends</div></div>${ICON.chev}</a>
     </main>${nav('home')}`);
 
